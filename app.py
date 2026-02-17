@@ -79,20 +79,19 @@ def charger_cerveau():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         else:
-            df[col] = 0 # Si pas de colonne terrain, on met 0
+            df[col] = 0
 
     df = df.dropna(subset=['valeur_fonciere', 'surface_reelle_bati', 'latitude', 'longitude'])
     df = df[(df['valeur_fonciere'] > 10000) & (df['surface_reelle_bati'] > 9)]
     
-    # Gestion du terrain : On met 0 pour les apparts pour ne pas fausser l'IA
-    # (car dans le fichier DVF, surface_terrain pour un appart est souvent la surface de la copro entière)
+    # Nettoyage Terrain : 0 pour les apparts pour ne pas fausser l'IA
     df.loc[df['type_local'] == 'Appartement', 'surface_terrain'] = 0
     df['surface_terrain'] = df['surface_terrain'].fillna(0)
 
-    # Entraînement
+    # Encodage
     df['type_encode'] = df['type_local'].apply(lambda x: 1 if x == 'Maison' else 0)
     
-    # On ajoute 'surface_terrain' dans l'apprentissage !
+    # IA avec Terrain inclus
     X = df[['surface_reelle_bati', 'nombre_pieces_principales', 'latitude', 'longitude', 'type_encode', 'surface_terrain']]
     y = df['valeur_fonciere']
     
@@ -100,7 +99,7 @@ def charger_cerveau():
     model.fit(X, y)
     return model, len(df)
 
-# Fonction API Adresse
+# Fonction API Adresse Gouv
 def trouver_adresse_gouv(adresse):
     if not adresse: return None
     url = f"https://api-adresse.data.gouv.fr/search/?q={adresse}&citycode=18033&limit=1"
@@ -138,14 +137,14 @@ if map_data and map_data['last_clicked']:
     lat = map_data['last_clicked']['lat']
     lon = map_data['last_clicked']['lng']
 
-# Formulaire Principal
+# --- FORMULAIRE ---
 st.markdown("#### Caractéristiques Principales")
 c1, c2, c3 = st.columns(3)
 with c1: type_bien = st.selectbox("Type", ["Maison", "Appartement"])
 with c2: surface = st.number_input("Surface Habitable (m²)", 10, 500, 90)
 with c3: pieces = st.number_input("Pièces", 1, 15, 4)
 
-# Options spécifiques selon le type
+# Options Dynamiques
 surface_terrain = 0
 options_plus = []
 
@@ -158,7 +157,7 @@ if type_bien == "Maison":
         piscine = st.checkbox("🏊 Piscine Creusée")
         garage = st.checkbox("🚗 Garage / Box fermé")
         
-    if piscina: options_plus.append("Piscine")
+    if piscine: options_plus.append("Piscine")
     if garage: options_plus.append("Garage")
 
 else: # Appartement
@@ -178,49 +177,37 @@ with c4: etat = st.select_slider("État", options=["À rénover", "Standard", "B
 with c5: dpe = st.select_slider("DPE", options=["G", "F", "E", "D", "C", "B", "A"], value="D")
 
 # -----------------------------------------------------------------------------
-# 4. CALCUL & EXPLICATION PRO
+# 4. CALCUL & RÉSULTATS
 # -----------------------------------------------------------------------------
 if st.button("CALCULER L'ESTIMATION"):
     
-    # 1. Prédiction IA (Prix brut Murs + Terrain Standard)
+    # A. Prédiction IA (Murs + Terrain)
     type_code = 1 if type_bien == "Maison" else 0
-    
-    # Pour l'IA, on utilise le terrain réel pour les maisons, et 0 pour les apparts
     terrain_ia = surface_terrain if type_bien == "Maison" else 0
     
+    # L'IA prédit le prix de base
     prix_brut = model.predict([[surface, pieces, lat, lon, type_code, terrain_ia]])[0]
 
-    # 2. Coefficients Hédoniques (État + DPE)
+    # B. Coefficients Qualitatifs
     coefs_etat = {"À rénover": 0.80, "Standard": 0.95, "Bon": 1.0, "Excellent": 1.1, "Neuf": 1.2}
     coefs_dpe = {"G": 0.80, "F": 0.90, "E": 0.95, "D": 1.0, "C": 1.05, "B": 1.10, "A": 1.15}
     
-    # 3. Valorisation des Annexes (Méthode "À la carte")
+    # C. Valorisation des Annexes (Bonus Manuels)
     valeur_annexes = 0
-    details_annexes = []
     
     if type_bien == "Maison":
-        if 'Piscine' in options_plus: 
-            valeur_annexes += 20000 # Valorisation forfaitaire piscine
-            details_annexes.append("+20 000€ (Piscine)")
-        if 'Garage' in options_plus:
-            valeur_annexes += 10000 # Valorisation garage
-            details_annexes.append("+10 000€ (Garage)")
+        if 'Piscine' in options_plus: valeur_annexes += 20000
+        if 'Garage' in options_plus: valeur_annexes += 10000
     else: # Appartement
-        if 'Balcon' in options_plus:
-            prix_brut *= 1.03 # +3%
-            details_annexes.append("+3% (Balcon)")
-        if 'Terrasse' in options_plus:
-            prix_brut *= 1.08 # +8%
-            details_annexes.append("+8% (Terrasse)")
-        if 'Parking' in options_plus:
-            valeur_annexes += 8000
-            details_annexes.append("+8 000€ (Parking)")
+        if 'Balcon' in options_plus: prix_brut *= 1.03
+        if 'Terrasse' in options_plus: prix_brut *= 1.08
+        if 'Parking' in options_plus: valeur_annexes += 8000
 
     # Calcul Final
     prix_ajuste = prix_brut * coefs_etat[etat] * coefs_dpe[dpe]
     prix_final = prix_ajuste + valeur_annexes
 
-    # AFFICHAGE RÉSULTAT
+    # AFFICHAGE
     st.markdown(f"""
     <div class="resultat-container">
         <h3 style="margin:0;">Valeur de Marché Estimée</h3>
@@ -229,12 +216,9 @@ if st.button("CALCULER L'ESTIMATION"):
     </div>
     """, unsafe_allow_html=True)
 
-    # --- SECTION EXPLICATIVE "PROFESSIONNELLE" ---
-    st.markdown("### 📊 Détail de la valorisation")
-    
+    # EXPLICATION
     impact_dpe_pct = (coefs_dpe[dpe] - 1) * 100
     impact_etat_pct = (coefs_etat[etat] - 1) * 100
-    
     html_annexes = "".join([f'<span class="option-tag">{opt}</span>' for opt in options_plus]) if options_plus else "Aucune option sélectionnée"
     
     st.markdown(f"""
@@ -250,9 +234,10 @@ if st.button("CALCULER L'ESTIMATION"):
         </ul>
         <b>3. Valorisation des Annexes & Équipements :</b><br>
         {html_annexes}<br>
-        <i>Les annexes (garage, piscine, extérieur) ont été ajoutées à la valeur vénale de base.</i>
+        <i>Les annexes ont été ajoutées à la valeur vénale de base par algorithme expert.</i>
     </div>
     """, unsafe_allow_html=True)
+
 
 
 
